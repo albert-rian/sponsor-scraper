@@ -324,12 +324,13 @@ def resolve_hq(city: str, region: str) -> tuple[str, str]:
 
 
 def clean_wikipedia_summary(extract: str) -> str:
-    """Take Wikipedia first sentence as-is, with basic quality check."""
+    """Take Wikipedia first sentence as-is — no reformatting, minimal quality check."""
     if not extract:
         return "Not Found"
     text = re.sub(r'\s+', ' ', extract).strip()
     first = re.split(r'(?<=[.!?])\s', text)[0]
-    if len(first) < 30 or not re.search(r'\bis\s+an?\b', first, re.IGNORECASE):
+    # Only reject if clearly too short or is a disambiguation note
+    if len(first) < 30 or first.lower().startswith("this article"):
         return "Not Found"
     return first[:300]
 
@@ -346,7 +347,7 @@ def clean_fallback_summary(text: str) -> str:
         return "Not Found"
     if "!" in first:
         return "Not Found"
-    if not any(v in first.lower() for v in QUALITY_VERBS):
+    if not any(re.search(r'\b' + re.escape(v) + r'\b', first, re.IGNORECASE) for v in QUALITY_VERBS):
         return "Not Found"
     return first[:300]
 
