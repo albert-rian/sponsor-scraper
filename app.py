@@ -28,24 +28,56 @@ JOBS = {}
 def find_sponsor_page(homepage_url: str) -> list[str]:
     """
     Given a homepage URL, return candidate sponsor page URLs.
-    Looks for nav links containing sponsor/partner/exhibitor keywords.
+    Tries three layers: direct crawl, DuckDuckGo search, common URL patterns.
     """
-    try:
-        resp = requests.get(homepage_url, headers=HEADERS, timeout=12, verify=False)
-        soup = BeautifulSoup(resp.text, "html.parser")
-    except Exception:
-        return []
-
+    from urllib.parse import urlparse
+    parsed = urlparse(homepage_url)
+    domain = parsed.netloc
+    base = f"{parsed.scheme}://{domain}"
     keywords = ["sponsor", "partner", "exhibitor", "supporter"]
     candidates = []
     seen = set()
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        text = a.get_text(strip=True).lower()
-        full = urljoin(homepage_url, href)
-        if any(k in href.lower() or k in text for k in keywords) and full not in seen:
-            seen.add(full)
-            candidates.append(full)
+
+    # Layer 1: direct crawl
+    try:
+        resp = requests.get(homepage_url, headers=HEADERS, timeout=12, verify=False)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            text = a.get_text(strip=True).lower()
+            full = urljoin(homepage_url, href)
+            if any(k in href.lower() or k in text for k in keywords) and full not in seen:
+                seen.add(full)
+                candidates.append(full)
+    except Exception:
+        pass
+
+    # Layer 2: DuckDuckGo search fallback (handles Cloudflare-protected homepages)
+    if not candidates:
+        try:
+            with DDGS() as d:
+                results = list(d.text(f"sponsors exhibitors site:{domain}", max_results=5))
+            for r in results:
+                href = r.get("href", "")
+                if domain in href and any(k in href.lower() for k in keywords):
+                    if href not in seen:
+                        seen.add(href)
+                        candidates.append(href)
+        except Exception:
+            pass
+
+    # Layer 3: probe common URL patterns
+    if not candidates:
+        for path in ["/sponsors", "/sponsors-exhibitors", "/partners", "/exhibitors", "/sponsorship"]:
+            url = base + path
+            try:
+                r = requests.get(url, headers=HEADERS, timeout=8, verify=False)
+                if r.status_code == 200 and url not in seen:
+                    seen.add(url)
+                    candidates.append(url)
+            except Exception:
+                continue
+
     return candidates
 
 
