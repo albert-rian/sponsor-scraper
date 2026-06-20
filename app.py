@@ -117,6 +117,16 @@ def try_js_api(page_url: str, page_html: str) -> list[str] | None:
     return None
 
 
+def clean_logo_alt(alt: str) -> str:
+    """Turn messy logo alt text into a clean company name."""
+    # Strip common logo filename suffixes
+    alt = re.sub(r'(?i)[_\-\s]*(logo|icon|img|image|badge|sponsor|lockup|white|black|color|logotype|LogoName|_logo|horizontal|vertical|stacked|full|primary|secondary)[\s_\-]*', ' ', alt)
+    alt = re.sub(r'\.(png|jpg|jpeg|svg|webp)$', '', alt, flags=re.IGNORECASE)
+    alt = re.sub(r'[_\-]+', ' ', alt).strip()
+    alt = re.sub(r'\s{2,}', ' ', alt).strip()
+    return alt
+
+
 def extract_names_from_json(obj, depth=0) -> list[str]:
     """Recursively walk parsed JSON looking for sponsor/company name fields."""
     if depth > 8:
@@ -189,7 +199,7 @@ def scrape_sponsors_from_html(page_html: str) -> list[str]:
                 if sibling.name in ["h1", "h2", "h3"] and not any(k in sibling.get_text(strip=True).lower() for k in keywords):
                     break
                 for img in sibling.find_all("img"):
-                    alt = img.get("alt", "").strip()
+                    alt = clean_logo_alt(img.get("alt", "").strip())
                     if alt and len(alt) > 2 and alt.lower() not in keywords:
                         names.add(alt)
                 for a in sibling.find_all("a"):
@@ -204,13 +214,22 @@ def scrape_sponsors_from_html(page_html: str) -> list[str]:
             eid = el.get("id", "")
             if any(k in (cls + eid).lower() for k in keywords):
                 for img in el.find_all("img"):
-                    alt = img.get("alt", "").strip()
+                    alt = clean_logo_alt(img.get("alt", "").strip())
                     if alt and len(alt) > 2:
                         names.add(alt)
                 for a in el.find_all("a"):
                     text = a.get_text(strip=True)
                     if text and 2 < len(text) < 80:
                         names.add(text)
+
+    # Strategy 3: dedicated sponsors page — grab all img alts on the whole page
+    if not names:
+        page_text = soup.get_text(" ", strip=True).lower()
+        if any(k in page_text[:2000] for k in keywords):
+            for img in soup.find_all("img"):
+                alt = clean_logo_alt(img.get("alt", "").strip())
+                if alt and 3 < len(alt) < 80 and alt.lower() not in keywords:
+                    names.add(alt)
 
     return sorted(names)
 
