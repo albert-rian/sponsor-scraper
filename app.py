@@ -5,6 +5,7 @@ import re
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin
 
 import requests
@@ -281,8 +282,11 @@ def enrich(name: str) -> dict:
         "employee_size": "Not Found",
     }
 
-    # General search
-    results = ddg(f"{name} company", 5)
+    # Single search query covering all fields at once
+    results = ddg(f"{name} company headquarters employees industry", 6)
+    if not results:
+        return result
+
     blob = " | ".join(r.get("title", "") + " " + r.get("body", "") for r in results)
 
     # Website
@@ -294,12 +298,11 @@ def enrich(name: str) -> dict:
             result["website"] = href.split("?")[0]
             break
 
-    # Summary from meta description
+    # Summary: meta description from website (one fast fetch), else first search snippet
     if result["website"] != "Not Found":
         meta = fetch_meta_description(result["website"])
         if meta and len(meta) > 30:
             result["summary"] = first_sentence(meta)
-
     if result["summary"] == "Not Found":
         for r in results:
             body = r.get("body", "").strip()
@@ -307,9 +310,7 @@ def enrich(name: str) -> dict:
                 result["summary"] = first_sentence(body)
                 break
 
-    # Industry
-    industry_results = ddg(f"{name} company industry sector what does it do", 4)
-    industry_blob = blob + " | ".join(r.get("body", "") for r in industry_results)
+    # Industry — extract from the combined blob
     for pat in [
         r'(?:is an?|is the)\s+([\w\s&/-]{3,40}?)\s+(?:company|provider|platform|firm|leader|software)',
         r'(?:leading|top|global)\s+([\w\s&/-]{3,40}?)\s+(?:company|provider|platform)',
@@ -320,28 +321,24 @@ def enrich(name: str) -> dict:
         r'human resources|marketing technology|education technology)',
         r'Industry:\s*([\w\s&,/-]+?)(?:\||\.|\n)',
     ]:
-        m = re.search(pat, industry_blob, re.IGNORECASE)
+        m = re.search(pat, blob, re.IGNORECASE)
         if m:
             result["industry"] = m.group(1).strip(" .,|")[:60]
             break
 
     # HQ
-    hq_results = ddg(f"{name} headquarters location city country", 4)
-    hq_blob = blob + " | ".join(r.get("body", "") for r in hq_results)
     for pat in [
         r'headquartered?\s+in\s+([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*|[A-Z]{2})',
         r'based\s+in\s+([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*)',
         r'([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*),\s*(United States|USA|UK|United Kingdom|Canada|Germany|France|India|Israel|Australia|Singapore|Japan|China|Netherlands|Sweden|Finland)',
     ]:
-        m = re.search(pat, hq_blob)
+        m = re.search(pat, blob)
         if m:
             result["hq_city"] = m.group(1).strip()
             result["hq_country"] = m.group(2).strip()
             break
 
     # Employees
-    emp_results = ddg(f"{name} number of employees company size", 4)
-    emp_blob = blob + " | ".join(r.get("body", "") for r in emp_results)
     for pat in [
         r'(\d[\d,]+)\s*[-–to]+\s*(\d[\d,]+)\s*employees',
         r'(\d[\d,]+)\+?\s*employees',
@@ -349,7 +346,7 @@ def enrich(name: str) -> dict:
         r'(?:over|more than|approximately|about)\s+(\d[\d,]+)\s*(?:employees|people)',
         r'(\d[\d,]+)\+?\s*(?:people|workers|staff)\s+(?:worldwide|globally)',
     ]:
-        m = re.search(pat, emp_blob, re.IGNORECASE)
+        m = re.search(pat, blob, re.IGNORECASE)
         if m:
             if m.lastindex and m.lastindex >= 2:
                 try:
@@ -383,20 +380,28 @@ def run_pipeline(job_id: str, homepage_url: str):
         job["total"] = len(names)
         job["message"] = f"Found {len(names)} sponsors. Starting enrichment..."
 
-        rows = []
-        for i, name in enumerate(names, 1):
-            job["progress"] = i
-            job["company"] = name
+        rows = [None] * len(names)
+        completed = [0]
+
+        def enrich_one(idx_name):
+            idx, name = idx_name
             try:
-                data = enrich(name)
+                return idx, enrich(name)
             except Exception:
-                data = {
+                return idx, {
                     "company_name": name, "website": "Not Found", "industry": "Not Found",
                     "summary": "Not Found", "hq_city": "Not Found",
                     "hq_country": "Not Found", "employee_size": "Not Found",
                 }
-            rows.append(data)
-            time.sleep(0.6)
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(enrich_one, (i, name)): name for i, name in enumerate(names)}
+            for future in as_completed(futures):
+                idx, data = future.result()
+                rows[idx] = data
+                completed[0] += 1
+                job["progress"] = completed[0]
+                job["company"] = data["company_name"]
 
         # Sort by employee size descending
         rows.sort(key=lambda r: parse_employee_number(r["employee_size"]), reverse=True)
