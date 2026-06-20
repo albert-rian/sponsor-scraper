@@ -1,24 +1,23 @@
 import csv
 import io
 import json
-import queue
 import re
 import threading
 import time
 import uuid
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
 from ddgs import DDGS
-from flask import Flask, Response, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_file
 
 app = Flask(__name__)
 requests.packages.urllib3.disable_warnings()
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
 
-# In-memory job store: job_id -> {status, queue, csv, error}
+# In-memory job store: job_id -> {status, progress, total, company, csv, error}
 JOBS = {}
 
 
@@ -295,29 +294,27 @@ def enrich(name: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def run_pipeline(job_id: str, homepage_url: str):
-    q = JOBS[job_id]["queue"]
-
-    def push(event: str, data: dict):
-        q.put(f"event: {event}\ndata: {json.dumps(data)}\n\n")
+    job = JOBS[job_id]
 
     try:
-        push("status", {"message": f"Finding sponsors page on {homepage_url}..."})
+        job["message"] = f"Finding sponsors page on {homepage_url}..."
         names = get_sponsors(homepage_url)
 
         if not names:
-            push("error", {"message": "Could not find any sponsor names on this site. Try pasting the direct sponsors page URL."})
-            JOBS[job_id]["status"] = "error"
+            job["status"] = "error"
+            job["error"] = "Could not find any sponsor names on this site. Try pasting the direct sponsors page URL."
             return
 
-        push("status", {"message": f"Found {len(names)} sponsors. Starting enrichment..."})
-        push("total", {"total": len(names)})
+        job["total"] = len(names)
+        job["message"] = f"Found {len(names)} sponsors. Starting enrichment..."
 
         rows = []
         for i, name in enumerate(names, 1):
-            push("progress", {"current": i, "total": len(names), "company": name})
+            job["progress"] = i
+            job["company"] = name
             try:
                 data = enrich(name)
-            except Exception as e:
+            except Exception:
                 data = {
                     "company_name": name, "website": "Not Found", "industry": "Not Found",
                     "summary": "Not Found", "hq_city": "Not Found",
@@ -335,14 +332,12 @@ def run_pipeline(job_id: str, homepage_url: str):
         writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
-        JOBS[job_id]["csv"] = buf.getvalue()
-        JOBS[job_id]["status"] = "done"
-
-        push("done", {"total": len(rows)})
+        job["csv"] = buf.getvalue()
+        job["status"] = "done"
 
     except Exception as e:
-        push("error", {"message": str(e)})
-        JOBS[job_id]["status"] = "error"
+        job["status"] = "error"
+        job["error"] = str(e)
 
 
 # ---------------------------------------------------------------------------
@@ -363,29 +358,27 @@ def run():
         url = "https://" + url
 
     job_id = str(uuid.uuid4())
-    JOBS[job_id] = {"status": "running", "queue": queue.Queue(), "csv": None, "error": None}
+    JOBS[job_id] = {
+        "status": "running", "progress": 0, "total": 0,
+        "company": "", "message": "Starting...", "csv": None, "error": None
+    }
     threading.Thread(target=run_pipeline, args=(job_id, url), daemon=True).start()
     return jsonify({"job_id": job_id})
 
 
-@app.route("/stream/<job_id>")
-def stream(job_id):
-    if job_id not in JOBS:
+@app.route("/status/<job_id>")
+def status(job_id):
+    job = JOBS.get(job_id)
+    if not job:
         return jsonify({"error": "Job not found"}), 404
-
-    def generate():
-        q = JOBS[job_id]["queue"]
-        while True:
-            try:
-                msg = q.get(timeout=30)
-                yield msg
-                if "event: done" in msg or "event: error" in msg:
-                    break
-            except queue.Empty:
-                yield "event: ping\ndata: {}\n\n"
-
-    return Response(generate(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return jsonify({
+        "status": job["status"],
+        "progress": job["progress"],
+        "total": job["total"],
+        "company": job["company"],
+        "message": job["message"],
+        "error": job["error"],
+    })
 
 
 @app.route("/download/<job_id>")
@@ -396,7 +389,6 @@ def download(job_id):
 
     buf = io.BytesIO(job["csv"].encode("utf-8"))
     buf.seek(0)
-    from flask import send_file
     return send_file(buf, mimetype="text/csv", as_attachment=True,
                      download_name="sponsors_enriched.csv")
 

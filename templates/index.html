@@ -317,7 +317,7 @@
 
   <script>
     let currentJobId = null;
-    let eventSource = null;
+    let pollInterval = null;
 
     function setError(msg) {
       const el = document.getElementById('error-section');
@@ -329,20 +329,61 @@
       document.getElementById('error-section').style.display = 'none';
     }
 
+    function stopPolling() {
+      if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+    }
+
+    function poll(job_id) {
+      pollInterval = setInterval(async () => {
+        try {
+          const resp = await fetch('/status/' + job_id);
+          const d = await resp.json();
+
+          if (d.status === 'error') {
+            stopPolling();
+            setError(d.error || 'Something went wrong.');
+            document.getElementById('progress-section').style.display = 'none';
+            document.getElementById('run-btn').disabled = false;
+            return;
+          }
+
+          if (d.total > 0) {
+            const pct = Math.round((d.progress / d.total) * 100);
+            document.getElementById('progress-fill').style.width = pct + '%';
+            document.getElementById('progress-count').textContent = `${d.progress} / ${d.total}`;
+            document.getElementById('company-name').textContent = d.company;
+            document.getElementById('status-text').textContent = 'Researching...';
+          } else {
+            document.getElementById('status-text').textContent = d.message;
+          }
+
+          if (d.status === 'done') {
+            stopPolling();
+            document.getElementById('progress-section').style.display = 'none';
+            document.getElementById('done-section').style.display = 'block';
+            document.getElementById('done-sub').textContent = `${d.total} sponsors enriched and sorted by company size.`;
+            document.getElementById('download-link').href = '/download/' + job_id;
+            document.getElementById('run-btn').disabled = false;
+          }
+        } catch (e) {
+          // Network hiccup — keep polling
+        }
+      }, 2000);
+    }
+
     async function startRun() {
       const url = document.getElementById('url-input').value.trim();
       if (!url) { setError('Please enter a URL.'); return; }
 
       clearError();
+      stopPolling();
       document.getElementById('run-btn').disabled = true;
       document.getElementById('done-section').style.display = 'none';
       document.getElementById('progress-section').style.display = 'block';
-      document.getElementById('status-text').textContent = 'Connecting...';
+      document.getElementById('status-text').textContent = 'Starting...';
       document.getElementById('company-name').textContent = '';
       document.getElementById('progress-fill').style.width = '0%';
       document.getElementById('progress-count').textContent = '';
-
-      if (eventSource) { eventSource.close(); }
 
       const resp = await fetch('/run', {
         method: 'POST',
@@ -353,52 +394,7 @@
       if (error) { setError(error); document.getElementById('run-btn').disabled = false; return; }
 
       currentJobId = job_id;
-      eventSource = new EventSource('/stream/' + job_id);
-
-      eventSource.addEventListener('status', e => {
-        const d = JSON.parse(e.data);
-        document.getElementById('status-text').textContent = d.message;
-      });
-
-      eventSource.addEventListener('total', e => {
-        const d = JSON.parse(e.data);
-        document.getElementById('status-text').textContent = `Enriching ${d.total} sponsors...`;
-      });
-
-      eventSource.addEventListener('progress', e => {
-        const d = JSON.parse(e.data);
-        const pct = Math.round((d.current / d.total) * 100);
-        document.getElementById('progress-fill').style.width = pct + '%';
-        document.getElementById('progress-count').textContent = `${d.current} / ${d.total}`;
-        document.getElementById('company-name').textContent = d.company;
-        document.getElementById('status-text').textContent = 'Researching...';
-      });
-
-      eventSource.addEventListener('done', e => {
-        const d = JSON.parse(e.data);
-        eventSource.close();
-        document.getElementById('progress-section').style.display = 'none';
-        document.getElementById('done-section').style.display = 'block';
-        document.getElementById('done-sub').textContent = `${d.total} sponsors enriched and sorted by company size.`;
-        document.getElementById('download-link').href = '/download/' + currentJobId;
-        document.getElementById('run-btn').disabled = false;
-      });
-
-      eventSource.addEventListener('error', e => {
-        try {
-          const d = JSON.parse(e.data);
-          setError(d.message);
-        } catch { setError('Something went wrong.'); }
-        eventSource.close();
-        document.getElementById('progress-section').style.display = 'none';
-        document.getElementById('run-btn').disabled = false;
-      });
-
-      eventSource.onerror = () => {
-        setError('Connection lost. Please try again.');
-        eventSource.close();
-        document.getElementById('run-btn').disabled = false;
-      };
+      poll(job_id);
     }
 
     document.getElementById('url-input').addEventListener('keydown', e => {
