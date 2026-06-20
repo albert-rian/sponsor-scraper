@@ -324,12 +324,17 @@ def resolve_hq(city: str, region: str) -> tuple[str, str]:
 
 
 def clean_wikipedia_summary(extract: str) -> str:
-    """Take Wikipedia first sentence as-is — no reformatting, minimal quality check."""
+    """Take Wikipedia first sentence as-is — strip pronunciation, minimal quality check."""
     if not extract:
         return "Not Found"
     text = re.sub(r'\s+', ' ', extract).strip()
     first = re.split(r'(?<=[.!?])\s', text)[0]
-    # Only reject if clearly too short or is a disambiguation note
+    # Strip IPA pronunciation blocks: (/ ... /) or ([...]) with phonetic chars
+    first = re.sub(r'\s*\(/[^)]+/\)', '', first)
+    first = re.sub(r'\s*\([^)]*[ˈˌɛɪəʊæɑɒʌʃʒθðŋ][^)]*\)', '', first)
+    # Strip Unicode garbage / encoding artifacts
+    first = re.sub(r'[^\x00-\x7FÀ-ɏḀ-ỿ]', '', first)
+    first = re.sub(r'\s{2,}', ' ', first).strip()
     if len(first) < 30 or first.lower().startswith("this article"):
         return "Not Found"
     return first[:300]
@@ -364,26 +369,26 @@ def parse_employee_number(size_str: str) -> int:
 def wikipedia_lookup(name: str) -> dict:
     """
     Query the Wikipedia API for a company. Returns partial result dict.
-    Fast, free, structured — great for well-known companies.
+    Uses DDG to find the right Wikipedia page (avoids company-stub vs product-page mismatch).
     """
     out = {}
     try:
-        # Search for the page
-        search_resp = requests.get(
-            "https://en.wikipedia.org/w/api.php",
-            params={"action": "query", "list": "search", "srsearch": name + " company",
-                    "format": "json", "srlimit": 1},
-            timeout=6
-        ).json()
-        hits = search_resp.get("query", {}).get("search", [])
-        if not hits:
+        # Use DDG to find the best Wikipedia article for this company
+        wiki_results = ddg(f"{name} wikipedia", 5)
+        title = None
+        for r in wiki_results:
+            href = r.get("href", "")
+            if "en.wikipedia.org/wiki/" in href:
+                # Extract page title from URL
+                title = href.split("/wiki/")[-1].split("?")[0].replace("_", " ")
+                break
+        if not title:
             return out
-        title = hits[0]["title"]
 
-        # Fetch page extract + page props
+        # Fetch page extract
         page_resp = requests.get(
             "https://en.wikipedia.org/w/api.php",
-            params={"action": "query", "titles": title, "prop": "extracts|pageprops",
+            params={"action": "query", "titles": title, "prop": "extracts",
                     "exintro": True, "explaintext": True, "format": "json"},
             timeout=6
         ).json()
