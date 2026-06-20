@@ -348,25 +348,31 @@ def wikipedia_lookup(name: str) -> dict:
 
 def best_website(name: str, search_results: list[dict]) -> str:
     """Pick the official company website from search results."""
-    skip = ("linkedin", "facebook", "twitter", "crunchbase", "bloomberg",
-            "wikipedia", "glassdoor", "indeed", "youtube", "instagram",
-            "yelp", "yahoo", "reuters", "forbes", "techcrunch", "wsj",
-            "bloomberg", "businesswire", "prnewswire", "finance.")
-    name_slug = re.sub(r'[^a-z0-9]', '', name.lower())
-    # Prefer a result whose domain contains part of the company name
+    # Sites that are never the official company website
+    skip = (
+        "linkedin", "facebook", "twitter", "x.com", "crunchbase", "bloomberg",
+        "wikipedia", "glassdoor", "indeed", "youtube", "instagram", "yelp",
+        "yahoo", "reuters", "forbes", "techcrunch", "wsj", "fortune",
+        "businesswire", "prnewswire", "businessinsider", "cnbc", "cnn",
+        "perplexity", "google", "bing", "reddit", "quora", "medium",
+        "pitchbook", "owler", "zoominfo", "dnb.com", "craft.co",
+        "finance.", "/finance/", "stock", "markets", "investing",
+    )
+    # Build slugs from each word in the company name (ignore common words)
+    ignore = {"the", "a", "an", "and", "of", "inc", "llc", "ltd", "corp",
+              "corporation", "technologies", "technology", "solutions", "group",
+              "systems", "services", "software", "global", "international"}
+    name_words = [w for w in re.sub(r'[^a-z0-9 ]', '', name.lower()).split() if w not in ignore]
+
     for r in search_results:
         href = r.get("href", "")
-        if not href or any(s in href for s in skip):
+        if not href or any(s in href.lower() for s in skip):
             continue
-        domain = re.sub(r'https?://(www\.)?', '', href).split("/")[0]
-        domain_slug = re.sub(r'[^a-z0-9]', '', domain.lower())
-        if name_slug[:5] in domain_slug or domain_slug[:5] in name_slug:
-            return "https://" + domain
-    # Fallback: first non-skip result
-    for r in search_results:
-        href = r.get("href", "")
-        if href and not any(s in href for s in skip):
-            return href.split("?")[0]
+        domain = re.sub(r'https?://(www\.)?', '', href).split("/")[0].lower()
+        domain_slug = re.sub(r'[^a-z0-9]', '', domain)
+        # Accept only if a meaningful name word appears in the domain
+        if any(len(w) >= 4 and w in domain_slug for w in name_words):
+            return "https://www." + domain if not domain.startswith("www") else "https://" + domain
     return "Not Found"
 
 
