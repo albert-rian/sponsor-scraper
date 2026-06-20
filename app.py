@@ -467,6 +467,28 @@ def best_website(name: str, search_results: list[dict]) -> str:
     return "Not Found"
 
 
+def best_website_relaxed(search_results: list[dict]) -> str:
+    """Last-resort: take the first non-junk result when name-matching fails."""
+    skip = (
+        "linkedin", "facebook", "twitter", "x.com", "crunchbase", "bloomberg",
+        "wikipedia", "glassdoor", "indeed", "youtube", "instagram", "yelp",
+        "yahoo", "reuters", "forbes", "techcrunch", "wsj", "fortune",
+        "businesswire", "prnewswire", "businessinsider", "cnbc", "cnn",
+        "perplexity", "google", "bing", "reddit", "quora", "medium",
+        "pitchbook", "owler", "zoominfo", "dnb.com", "craft.co",
+        "apollo.io", "rocketreach", "clearbit", "clutch.co", "g2.com",
+        "capterra", "trustpilot", "mapquest", "yellowpages", "manta.com",
+        "finance.", "stock", "markets", "investing",
+    )
+    for r in search_results:
+        href = r.get("href", "")
+        if not href or any(s in href.lower() for s in skip):
+            continue
+        domain = re.sub(r'https?://(www\.)?', '', href).split("/")[0].lower()
+        return "https://www." + domain if not domain.startswith("www") else "https://" + domain
+    return "Not Found"
+
+
 def enrich(name: str) -> dict:
     result = {
         "company_name": name,
@@ -481,10 +503,18 @@ def enrich(name: str) -> dict:
     wiki = wikipedia_lookup(name)
     result.update({k: v for k, v in wiki.items() if v})
 
-    # Step 2: Dedicated website search (targeted query finds official site reliably)
+    # Step 2: Dedicated website search — try multiple query variations
     if result["website"] == "Not Found":
-        site_results = ddg(f"{name} official website", 5)
+        # Query 1: "Bigeye official website" — works for well-known companies
+        site_results = ddg(f"{name} official website", 6)
         result["website"] = best_website(name, site_results)
+    if result["website"] == "Not Found":
+        # Query 2: just the name — first organic result is usually the homepage
+        site_results2 = ddg(name, 5)
+        result["website"] = best_website(name, site_results2)
+        # Relaxed fallback: if name is short/unique, take first non-junk result
+        if result["website"] == "Not Found" and site_results2:
+            result["website"] = best_website_relaxed(site_results2)
 
     # Step 3: General search for remaining fields
     search_results = ddg(f"{name} company headquarters employees", 6)
