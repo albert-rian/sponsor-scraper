@@ -242,7 +242,7 @@ def ddg(query: str, n: int = 5) -> list[dict]:
 
 def fetch_meta_description(url: str) -> str:
     try:
-        r = requests.get(url, headers=HEADERS, timeout=8, verify=False, allow_redirects=True)
+        r = requests.get(url, headers=HEADERS, timeout=4, verify=False, allow_redirects=True)
         soup = BeautifulSoup(r.text, "html.parser")
         desc = (
             (soup.find("meta", property="og:description") or {}).get("content")
@@ -281,7 +281,7 @@ def city_to_country(city: str) -> str:
             "https://nominatim.openstreetmap.org/search",
             params={"q": city, "format": "json", "limit": 1, "addressdetails": 1},
             headers={"User-Agent": "SponsorScraper/1.0 contact@example.com"},
-            timeout=5,
+            timeout=3,
         )
         data = resp.json()
         country = data[0].get("address", {}).get("country", "") if data else ""
@@ -289,6 +289,19 @@ def city_to_country(city: str) -> str:
         country = ""
     _CITY_CACHE[key] = country
     return country
+
+
+# Known country names — if a region already IS a country, skip Nominatim
+KNOWN_COUNTRIES = {
+    "United States", "United Kingdom", "Germany", "France", "India", "Canada",
+    "Australia", "Japan", "China", "Singapore", "Israel", "Netherlands", "Sweden",
+    "Finland", "Norway", "Denmark", "Switzerland", "Spain", "Italy", "Poland",
+    "Brazil", "Mexico", "South Korea", "Russia", "United Arab Emirates",
+    "Ireland", "Belgium", "Austria", "Portugal", "New Zealand", "South Africa",
+    "Argentina", "Colombia", "Chile", "Indonesia", "Malaysia", "Thailand",
+    "Vietnam", "Philippines", "Pakistan", "Bangladesh", "Egypt", "Nigeria",
+    "Kenya", "Ghana", "Turkey", "Saudi Arabia", "Qatar", "Kuwait",
+}
 
 JUNK_PREFIXES = (
     "find the latest", "check out", "welcome to", "sign in", "log in",
@@ -339,7 +352,10 @@ def resolve_hq(city: str, region: str) -> tuple[str, str]:
               "UK": "United Kingdom", "UAE": "United Arab Emirates"}
     if region in abbrev:
         return city.strip(), abbrev[region]
-    # Try Nominatim to resolve unknown region/country names
+    # If region is already a known country name, use it directly
+    if region in KNOWN_COUNTRIES:
+        return city.strip(), region
+    # Unknown region — ask Nominatim (only for truly ambiguous cases)
     country = city_to_country(city)
     return city.strip(), country if country else region
 
@@ -509,7 +525,7 @@ def enrich(name: str) -> dict:
         for tld in [".com", ".io", ".ai", ".co"]:
             url = f"https://www.{slug}{tld}"
             try:
-                r = requests.get(url, headers=HEADERS, timeout=5, allow_redirects=True)
+                r = requests.get(url, headers=HEADERS, timeout=3, allow_redirects=True, verify=False)
                 if r.status_code == 200:
                     result["website"] = url
                     break
