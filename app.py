@@ -157,8 +157,46 @@ def scrape_sponsors_from_html(page_html: str) -> list[str]:
     return sorted(names)
 
 
+def try_worker_api_via_search(domain: str) -> list[str] | None:
+    """
+    Search DuckDuckGo for a Cloudflare Worker API URL associated with this domain,
+    then hit it directly. Works even when the conference site itself blocks scrapers.
+    """
+    try:
+        with DDGS() as d:
+            results = list(d.text(f'"{domain}" "workers.dev" sponsors', max_results=5))
+        for r in results:
+            body = r.get("body", "") + " " + r.get("href", "")
+            m = re.search(r'https://[\w-]+\.[\w-]+\.workers\.dev', body)
+            if m:
+                api_base = m.group(0).rstrip("/")
+                for path in ["/sponsors", "/exhibitors", "/api/sponsors"]:
+                    try:
+                        resp = requests.get(api_base + path, headers=HEADERS, timeout=10)
+                        if resp.status_code == 200 and "json" in resp.headers.get("content-type", ""):
+                            data = resp.json()
+                            sponsors = data.get("sponsors", data.get("exhibitors", []))
+                            if sponsors:
+                                names = []
+                                for s in sponsors:
+                                    name = s.get("name", "").strip()
+                                    cf = (s.get("customFields") or {}).get("Include in public list", {})
+                                    if name and cf.get("value") != "no":
+                                        names.append(name)
+                                if names:
+                                    return sorted(set(names))
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return None
+
+
 def get_sponsors(homepage_url: str) -> list[str]:
     """Main entry point: return deduplicated sponsor names from a conference site."""
+    from urllib.parse import urlparse
+    domain = urlparse(homepage_url).netloc
+
     candidate_pages = find_sponsor_page(homepage_url)
     if not candidate_pages:
         candidate_pages = [homepage_url]
@@ -179,6 +217,11 @@ def get_sponsors(homepage_url: str) -> list[str]:
                 return names
         except Exception:
             continue
+
+    # Last resort: search for Cloudflare Worker API URL via DuckDuckGo
+    names = try_worker_api_via_search(domain)
+    if names:
+        return names
 
     return []
 
