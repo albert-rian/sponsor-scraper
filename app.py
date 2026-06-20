@@ -254,12 +254,90 @@ def fetch_meta_description(url: str) -> str:
         return ""
 
 
-def first_sentence(text: str) -> str:
+US_STATES = {
+    "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado",
+    "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho",
+    "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana",
+    "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota",
+    "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada",
+    "New Hampshire", "New Jersey", "New Mexico", "New York",
+    "North Carolina", "North Dakota", "Ohio", "Oklahoma", "Oregon",
+    "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota",
+    "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington",
+    "West Virginia", "Wisconsin", "Wyoming", "District of Columbia",
+}
+
+JUNK_PREFIXES = (
+    "find the latest", "check out", "welcome to", "sign in", "log in",
+    "login", "subscribe", "shop", "buy", "get started", "learn more",
+    "click here", "read more", "home -", "official site",
+)
+
+QUALITY_VERBS = (
+    "is a", "is an", "provides", "offers", "develops", "builds",
+    "helps", "enables", "delivers", "creates", "powers", "connects",
+    "specializes", "focuses", "designs", "manufactures", "operates",
+)
+
+
+def resolve_hq(city: str, region: str) -> tuple[str, str]:
+    """Map a city + state/country string to (hq_city, hq_country)."""
+    region = region.strip()
+    if region in US_STATES:
+        return city.strip(), "United States"
+    # Common abbreviations
+    mapping = {"USA": "United States", "US": "United States", "UK": "United Kingdom",
+               "UAE": "United Arab Emirates"}
+    return city.strip(), mapping.get(region, region)
+
+
+def make_summary(company_name: str, text: str) -> str:
+    """
+    Build a quality-checked summary in the format '{Name} is a ...'
+    Returns 'Not Found' if no good sentence can be produced.
+    """
     if not text:
         return "Not Found"
     text = re.sub(r'\s+', ' ', text).strip()
-    m = re.match(r'^(.+?[.!?])(?:\s|$)', text)
-    return m.group(1) if m else text[:200]
+
+    # Step A: prefer a sentence that contains "is a" / "is an"
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    candidate = ""
+    for s in sentences[:5]:
+        if re.search(r'\bis\s+an?\b', s, re.IGNORECASE):
+            candidate = s
+            break
+    if not candidate:
+        candidate = sentences[0] if sentences else text[:250]
+
+    # Step B: reformat to "{short name} is ..."
+    # Strip any long formal name prefix ("Dell Technologies Inc. is") → replace with short name
+    short_name = company_name.split("(")[0].strip()  # drop parenthetical like "(AWS)"
+    candidate = re.sub(
+        r'^[\w\s,\.&/-]{2,60}?\s+is\s+',
+        f"{short_name} is ",
+        candidate,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    # If still doesn't start with the name, prepend it
+    if not candidate.lower().startswith(short_name.lower()[:6]):
+        if re.search(r'\bis\s+an?\b', candidate, re.IGNORECASE):
+            candidate = re.sub(r'^.*?\bis\s+', f"{short_name} is ", candidate, count=1, flags=re.IGNORECASE)
+
+    candidate = candidate.strip()
+
+    # Step C: quality checks
+    if len(candidate) < 30:
+        return "Not Found"
+    if any(candidate.lower().startswith(j) for j in JUNK_PREFIXES):
+        return "Not Found"
+    if "!" in candidate:
+        return "Not Found"
+    if not any(v in candidate.lower() for v in QUALITY_VERBS):
+        return "Not Found"
+
+    return candidate[:300]
 
 
 def parse_employee_number(size_str: str) -> int:
@@ -303,28 +381,22 @@ def wikipedia_lookup(name: str) -> dict:
         if not extract:
             return out
 
-        # Summary: first sentence of the extract
-        out["summary"] = first_sentence(extract)
+        # Summary
+        summary = make_summary(name, extract)
+        if summary != "Not Found":
+            out["summary"] = summary
 
-        # Industry: look for "is an American/global/multinational X company"
-        for pat in [
-            r'is an?\s+(?:\w+\s+){0,3}([\w\s&/-]+?)\s+(?:company|corporation|firm|conglomerate)',
-            r'([\w\s&/-]+?)\s+company\b',
-        ]:
-            m = re.search(pat, extract[:500], re.IGNORECASE)
-            if m:
-                out["industry"] = m.group(1).strip()[:60]
-                break
-
-        # HQ: "headquartered in City, Country/State"
+        # HQ — handles both state names (Texas) and country names (Germany)
         for pat in [
             r'headquartered\s+in\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
             r'based\s+in\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
+            r'its\s+headquarters\s+(?:is|are)\s+(?:in|located\s+in)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
         ]:
             m = re.search(pat, extract)
             if m:
-                out["hq_city"] = m.group(1).strip()
-                out["hq_country"] = m.group(2).strip()
+                city, country = resolve_hq(m.group(1), m.group(2))
+                out["hq_city"] = city
+                out["hq_country"] = country
                 break
 
         # Employees
@@ -380,7 +452,6 @@ def enrich(name: str) -> dict:
     result = {
         "company_name": name,
         "website": "Not Found",
-        "industry": "Not Found",
         "summary": "Not Found",
         "hq_city": "Not Found",
         "hq_country": "Not Found",
@@ -389,55 +460,40 @@ def enrich(name: str) -> dict:
 
     # Step 1: Wikipedia lookup (fast, high quality for known companies)
     wiki = wikipedia_lookup(name)
-    if wiki.get("summary"):
-        result.update({k: v for k, v in wiki.items() if v})
+    result.update({k: v for k, v in wiki.items() if v})
 
-    # Step 2: DDG search to fill gaps + find official website
-    search_results = ddg(f"{name} company headquarters employees industry", 6)
+    # Step 2: DDG search to fill remaining gaps + find official website
+    search_results = ddg(f"{name} company headquarters employees", 6)
     blob = " | ".join(r.get("title", "") + " " + r.get("body", "") for r in search_results)
 
     # Website — smarter domain matching
     result["website"] = best_website(name, search_results)
 
-    # Summary fallback: meta description from official site
+    # Summary fallback: meta description from official site, then search snippet
     if result["summary"] == "Not Found" and result["website"] != "Not Found":
         meta = fetch_meta_description(result["website"])
-        if meta and len(meta) > 30:
-            result["summary"] = first_sentence(meta)
+        if meta:
+            result["summary"] = make_summary(name, meta)
     if result["summary"] == "Not Found":
         for r in search_results:
             body = r.get("body", "").strip()
-            if body and len(body) > 40:
-                result["summary"] = first_sentence(body)
+            s = make_summary(name, body)
+            if s != "Not Found":
+                result["summary"] = s
                 break
 
-    # Industry fallback
-    if result["industry"] == "Not Found":
-        for pat in [
-            r'(?:is an?|is the)\s+([\w\s&/-]{3,40}?)\s+(?:company|provider|platform|firm|leader|software)',
-            r'(?:leading|top|global)\s+([\w\s&/-]{3,40}?)\s+(?:company|provider|platform)',
-            r'specializes?\s+in\s+([\w\s&,/-]{3,50}?)(?:\.|,)',
-            r'(artificial intelligence|machine learning|cloud computing|cybersecurity|data analytics|'
-            r'fintech|healthcare IT|e-commerce|SaaS|enterprise software|robotics|networking|'
-            r'semiconductor|consulting|financial services|telecommunications|logistics|'
-            r'human resources|marketing technology|education technology)',
-        ]:
-            m = re.search(pat, blob, re.IGNORECASE)
-            if m:
-                result["industry"] = m.group(1).strip(" .,|")[:60]
-                break
-
-    # HQ fallback
+    # HQ fallback with state mapping
     if result["hq_city"] == "Not Found":
         for pat in [
-            r'headquartered?\s+in\s+([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*|[A-Z]{2})',
-            r'based\s+in\s+([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*)',
-            r'([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*),\s*(United States|USA|UK|United Kingdom|Canada|Germany|France|India|Israel|Australia|Singapore|Japan|China|Netherlands|Sweden|Finland)',
+            r'headquartered?\s+in\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
+            r'based\s+in\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*),\s*(United States|USA|UK|United Kingdom|Canada|Germany|France|India|Israel|Australia|Singapore|Japan|China|Netherlands|Sweden|Finland)',
         ]:
             m = re.search(pat, blob)
             if m:
-                result["hq_city"] = m.group(1).strip()
-                result["hq_country"] = m.group(2).strip()
+                city, country = resolve_hq(m.group(1), m.group(2))
+                result["hq_city"] = city
+                result["hq_country"] = country
                 break
 
     # Employees fallback
@@ -510,7 +566,7 @@ def run_pipeline(job_id: str, homepage_url: str):
         rows.sort(key=lambda r: parse_employee_number(r["employee_size"]), reverse=True)
 
         # Build CSV
-        fieldnames = ["company_name", "website", "industry", "summary", "hq_city", "hq_country", "employee_size"]
+        fieldnames = ["company_name", "website", "summary", "hq_city", "hq_country", "employee_size"]
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
