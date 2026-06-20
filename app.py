@@ -267,10 +267,42 @@ US_STATES = {
     "West Virginia", "Wisconsin", "Wyoming", "District of Columbia",
 }
 
+# Major business cities → country (for HQ fallback lookup)
+CITY_COUNTRY = {
+    "new york": "United States", "san francisco": "United States",
+    "seattle": "United States", "austin": "United States",
+    "boston": "United States", "chicago": "United States",
+    "los angeles": "United States", "denver": "United States",
+    "atlanta": "United States", "dallas": "United States",
+    "houston": "United States", "miami": "United States",
+    "washington": "United States", "san jose": "United States",
+    "san diego": "United States", "minneapolis": "United States",
+    "detroit": "United States", "phoenix": "United States",
+    "portland": "United States", "nashville": "United States",
+    "london": "United Kingdom", "manchester": "United Kingdom",
+    "edinburgh": "United Kingdom", "berlin": "Germany",
+    "munich": "Germany", "hamburg": "Germany", "frankfurt": "Germany",
+    "paris": "France", "amsterdam": "Netherlands",
+    "stockholm": "Sweden", "helsinki": "Finland", "oslo": "Norway",
+    "copenhagen": "Denmark", "zurich": "Switzerland",
+    "tel aviv": "Israel", "singapore": "Singapore",
+    "toronto": "Canada", "vancouver": "Canada", "montreal": "Canada",
+    "bangalore": "India", "mumbai": "India", "hyderabad": "India",
+    "delhi": "India", "pune": "India", "chennai": "India",
+    "tokyo": "Japan", "osaka": "Japan", "sydney": "Australia",
+    "melbourne": "Australia", "beijing": "China", "shanghai": "China",
+    "shenzhen": "China", "seoul": "South Korea", "dubai": "United Arab Emirates",
+    "madrid": "Spain", "barcelona": "Spain", "milan": "Italy",
+    "rome": "Italy", "warsaw": "Poland", "prague": "Czech Republic",
+    "budapest": "Hungary", "bucharest": "Romania", "moscow": "Russia",
+    "sao paulo": "Brazil", "mexico city": "Mexico",
+}
+
 JUNK_PREFIXES = (
     "find the latest", "check out", "welcome to", "sign in", "log in",
     "login", "subscribe", "shop", "buy", "get started", "learn more",
-    "click here", "read more", "home -", "official site",
+    "click here", "read more", "home -", "official site", "explore",
+    "discover", "join us", "contact", "about us",
 )
 
 QUALITY_VERBS = (
@@ -281,63 +313,42 @@ QUALITY_VERBS = (
 
 
 def resolve_hq(city: str, region: str) -> tuple[str, str]:
-    """Map a city + state/country string to (hq_city, hq_country)."""
+    """Map a city + state/country to (hq_city, hq_country).
+    For US companies, use state as hq_city per user preference."""
     region = region.strip()
     if region in US_STATES:
-        return city.strip(), "United States"
-    # Common abbreviations
-    mapping = {"USA": "United States", "US": "United States", "UK": "United Kingdom",
-               "UAE": "United Arab Emirates"}
+        return region, "United States"  # use state, not city
+    mapping = {"USA": "United States", "US": "United States",
+               "UK": "United Kingdom", "UAE": "United Arab Emirates"}
     return city.strip(), mapping.get(region, region)
 
 
-def make_summary(company_name: str, text: str) -> str:
-    """
-    Build a quality-checked summary in the format '{Name} is a ...'
-    Returns 'Not Found' if no good sentence can be produced.
-    """
+def clean_wikipedia_summary(extract: str) -> str:
+    """Take Wikipedia first sentence as-is, with basic quality check."""
+    if not extract:
+        return "Not Found"
+    text = re.sub(r'\s+', ' ', extract).strip()
+    first = re.split(r'(?<=[.!?])\s', text)[0]
+    if len(first) < 30 or not re.search(r'\bis\s+an?\b', first, re.IGNORECASE):
+        return "Not Found"
+    return first[:300]
+
+
+def clean_fallback_summary(text: str) -> str:
+    """Quality check for non-Wikipedia summaries (meta desc / DDG snippet)."""
     if not text:
         return "Not Found"
     text = re.sub(r'\s+', ' ', text).strip()
-
-    # Step A: prefer a sentence that contains "is a" / "is an"
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    candidate = ""
-    for s in sentences[:5]:
-        if re.search(r'\bis\s+an?\b', s, re.IGNORECASE):
-            candidate = s
-            break
-    if not candidate:
-        candidate = sentences[0] if sentences else text[:250]
-
-    # Step B: reformat to "{short name} is ..."
-    # Strip any long formal name prefix ("Dell Technologies Inc. is") → replace with short name
-    short_name = company_name.split("(")[0].strip()  # drop parenthetical like "(AWS)"
-    candidate = re.sub(
-        r'^[\w\s,\.&/-]{2,60}?\s+is\s+',
-        f"{short_name} is ",
-        candidate,
-        count=1,
-        flags=re.IGNORECASE,
-    )
-    # If still doesn't start with the name, prepend it
-    if not candidate.lower().startswith(short_name.lower()[:6]):
-        if re.search(r'\bis\s+an?\b', candidate, re.IGNORECASE):
-            candidate = re.sub(r'^.*?\bis\s+', f"{short_name} is ", candidate, count=1, flags=re.IGNORECASE)
-
-    candidate = candidate.strip()
-
-    # Step C: quality checks
-    if len(candidate) < 30:
+    first = re.split(r'(?<=[.!?])\s', text)[0]
+    if len(first) < 30:
         return "Not Found"
-    if any(candidate.lower().startswith(j) for j in JUNK_PREFIXES):
+    if any(first.lower().startswith(j) for j in JUNK_PREFIXES):
         return "Not Found"
-    if "!" in candidate:
+    if "!" in first:
         return "Not Found"
-    if not any(v in candidate.lower() for v in QUALITY_VERBS):
+    if not any(v in first.lower() for v in QUALITY_VERBS):
         return "Not Found"
-
-    return candidate[:300]
+    return first[:300]
 
 
 def parse_employee_number(size_str: str) -> int:
@@ -381,8 +392,8 @@ def wikipedia_lookup(name: str) -> dict:
         if not extract:
             return out
 
-        # Summary
-        summary = make_summary(name, extract)
+        # Summary — use Wikipedia first sentence as-is
+        summary = clean_wikipedia_summary(extract)
         if summary != "Not Found":
             out["summary"] = summary
 
@@ -428,6 +439,8 @@ def best_website(name: str, search_results: list[dict]) -> str:
         "businesswire", "prnewswire", "businessinsider", "cnbc", "cnn",
         "perplexity", "google", "bing", "reddit", "quora", "medium",
         "pitchbook", "owler", "zoominfo", "dnb.com", "craft.co",
+        "apollo.io", "rocketreach", "clearbit", "clutch.co", "g2.com",
+        "capterra", "trustpilot", "mapquest", "yellowpages", "manta.com",
         "finance.", "/finance/", "stock", "markets", "investing",
     )
     # Build slugs from each word in the company name (ignore common words)
@@ -462,22 +475,24 @@ def enrich(name: str) -> dict:
     wiki = wikipedia_lookup(name)
     result.update({k: v for k, v in wiki.items() if v})
 
-    # Step 2: DDG search to fill remaining gaps + find official website
+    # Step 2: Dedicated website search (targeted query finds official site reliably)
+    if result["website"] == "Not Found":
+        site_results = ddg(f"{name} official website", 5)
+        result["website"] = best_website(name, site_results)
+
+    # Step 3: General search for remaining fields
     search_results = ddg(f"{name} company headquarters employees", 6)
     blob = " | ".join(r.get("title", "") + " " + r.get("body", "") for r in search_results)
-
-    # Website — smarter domain matching
-    result["website"] = best_website(name, search_results)
 
     # Summary fallback: meta description from official site, then search snippet
     if result["summary"] == "Not Found" and result["website"] != "Not Found":
         meta = fetch_meta_description(result["website"])
         if meta:
-            result["summary"] = make_summary(name, meta)
+            result["summary"] = clean_fallback_summary(meta)
     if result["summary"] == "Not Found":
         for r in search_results:
             body = r.get("body", "").strip()
-            s = make_summary(name, body)
+            s = clean_fallback_summary(body)
             if s != "Not Found":
                 result["summary"] = s
                 break
@@ -493,6 +508,15 @@ def enrich(name: str) -> dict:
             if m:
                 city, country = resolve_hq(m.group(1), m.group(2))
                 result["hq_city"] = city
+                result["hq_country"] = country
+                break
+
+    # HQ last resort: scan blob for known major city names
+    if result["hq_city"] == "Not Found":
+        blob_lower = blob.lower()
+        for city, country in CITY_COUNTRY.items():
+            if city in blob_lower:
+                result["hq_city"] = city.title()
                 result["hq_country"] = country
                 break
 
