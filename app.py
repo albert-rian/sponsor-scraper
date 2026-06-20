@@ -443,7 +443,7 @@ def best_website(name: str, search_results: list[dict]) -> str:
         domain = re.sub(r'https?://(www\.)?', '', href).split("/")[0].lower()
         domain_slug = re.sub(r'[^a-z0-9]', '', domain)
         # Accept only if a meaningful name word appears in the domain
-        if any(len(w) >= 4 and w in domain_slug for w in name_words):
+        if any(len(w) >= 3 and w in domain_slug for w in name_words):
             return "https://www." + domain if not domain.startswith("www") else "https://" + domain
     return "Not Found"
 
