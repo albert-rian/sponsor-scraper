@@ -267,36 +267,28 @@ US_STATES = {
     "West Virginia", "Wisconsin", "Wyoming", "District of Columbia",
 }
 
-# Major business cities → country (for HQ fallback lookup)
-CITY_COUNTRY = {
-    "new york": "United States", "san francisco": "United States",
-    "seattle": "United States", "austin": "United States",
-    "boston": "United States", "chicago": "United States",
-    "los angeles": "United States", "denver": "United States",
-    "atlanta": "United States", "dallas": "United States",
-    "houston": "United States", "miami": "United States",
-    "washington": "United States", "san jose": "United States",
-    "san diego": "United States", "minneapolis": "United States",
-    "detroit": "United States", "phoenix": "United States",
-    "portland": "United States", "nashville": "United States",
-    "london": "United Kingdom", "manchester": "United Kingdom",
-    "edinburgh": "United Kingdom", "berlin": "Germany",
-    "munich": "Germany", "hamburg": "Germany", "frankfurt": "Germany",
-    "paris": "France", "amsterdam": "Netherlands",
-    "stockholm": "Sweden", "helsinki": "Finland", "oslo": "Norway",
-    "copenhagen": "Denmark", "zurich": "Switzerland",
-    "tel aviv": "Israel", "singapore": "Singapore",
-    "toronto": "Canada", "vancouver": "Canada", "montreal": "Canada",
-    "bangalore": "India", "mumbai": "India", "hyderabad": "India",
-    "delhi": "India", "pune": "India", "chennai": "India",
-    "tokyo": "Japan", "osaka": "Japan", "sydney": "Australia",
-    "melbourne": "Australia", "beijing": "China", "shanghai": "China",
-    "shenzhen": "China", "seoul": "South Korea", "dubai": "United Arab Emirates",
-    "madrid": "Spain", "barcelona": "Spain", "milan": "Italy",
-    "rome": "Italy", "warsaw": "Poland", "prague": "Czech Republic",
-    "budapest": "Hungary", "bucharest": "Romania", "moscow": "Russia",
-    "sao paulo": "Brazil", "mexico city": "Mexico",
-}
+# Cache for Nominatim lookups (city name → country) to avoid duplicate requests
+_CITY_CACHE: dict[str, str] = {}
+
+
+def city_to_country(city: str) -> str:
+    """Look up any city in the world via OpenStreetMap Nominatim. Free, no API key."""
+    key = city.lower().strip()
+    if key in _CITY_CACHE:
+        return _CITY_CACHE[key]
+    try:
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": city, "format": "json", "limit": 1, "addressdetails": 1},
+            headers={"User-Agent": "SponsorScraper/1.0 contact@example.com"},
+            timeout=5,
+        )
+        data = resp.json()
+        country = data[0].get("address", {}).get("country", "") if data else ""
+    except Exception:
+        country = ""
+    _CITY_CACHE[key] = country
+    return country
 
 JUNK_PREFIXES = (
     "find the latest", "check out", "welcome to", "sign in", "log in",
@@ -343,9 +335,13 @@ def resolve_hq(city: str, region: str) -> tuple[str, str]:
         return city.strip(), "Canada"
     if region in AUSTRALIA_STATES:
         return city.strip(), "Australia"
-    mapping = {"USA": "United States", "US": "United States",
-               "UK": "United Kingdom", "UAE": "United Arab Emirates"}
-    return city.strip(), mapping.get(region, region)
+    abbrev = {"USA": "United States", "US": "United States",
+              "UK": "United Kingdom", "UAE": "United Arab Emirates"}
+    if region in abbrev:
+        return city.strip(), abbrev[region]
+    # Try Nominatim to resolve unknown region/country names
+    country = city_to_country(city)
+    return city.strip(), country if country else region
 
 
 def clean_wikipedia_summary(extract: str) -> str:
@@ -551,14 +547,18 @@ def enrich(name: str) -> dict:
                 result["hq_country"] = country
                 break
 
-    # HQ last resort: scan blob for known major city names
+    # HQ last resort: extract city from blob then resolve via Nominatim
     if not result["hq_city"]:
-        blob_lower = blob.lower()
-        for city, country in CITY_COUNTRY.items():
-            if city in blob_lower:
-                result["hq_city"] = city.title()
+        m = re.search(
+            r'\b(headquartered?|based|located|offices?)\s+in\s+([A-Z][a-z]+(?:[\s-][A-Z][a-z]+)*)',
+            blob
+        )
+        if m:
+            city = m.group(2).strip()
+            country = city_to_country(city)
+            if country:
+                result["hq_city"] = city
                 result["hq_country"] = country
-                break
 
     return result
 
