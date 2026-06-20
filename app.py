@@ -663,6 +663,21 @@ def run_pipeline(job_id: str, homepage_url: str):
     job = JOBS[job_id]
 
     try:
+        # Grab the page title for the CSV filename
+        try:
+            r = requests.get(homepage_url, headers=HEADERS, timeout=8, verify=False)
+            soup_title = BeautifulSoup(r.text, "html.parser")
+            title = (
+                (soup_title.find("meta", property="og:title") or {}).get("content")
+                or (soup_title.find("title") or BeautifulSoup("", "html.parser")).get_text()
+                or ""
+            ).strip()
+            # Clean to a safe filename
+            title = re.sub(r'[\\/:*?"<>|]', '', title).strip(" .-")[:60] or "conference"
+        except Exception:
+            title = "conference"
+        job["title"] = title
+
         job["message"] = f"Finding sponsors page on {homepage_url}..."
         names = get_sponsors(homepage_url)
 
@@ -733,7 +748,7 @@ def run():
     job_id = str(uuid.uuid4())
     JOBS[job_id] = {
         "status": "running", "progress": 0, "total": 0,
-        "company": "", "message": "Starting...", "csv": None, "error": None
+        "company": "", "message": "Starting...", "csv": None, "error": None, "title": "conference"
     }
     threading.Thread(target=run_pipeline, args=(job_id, url), daemon=True).start()
     return jsonify({"job_id": job_id})
@@ -762,8 +777,9 @@ def download(job_id):
 
     buf = io.BytesIO(job["csv"].encode("utf-8"))
     buf.seek(0)
-    return send_file(buf, mimetype="text/csv", as_attachment=True,
-                     download_name="sponsors_enriched.csv")
+    title = job.get("title", "conference")
+    filename = f"{title} - sponsors.csv"
+    return send_file(buf, mimetype="text/csv", as_attachment=True, download_name=filename)
 
 
 if __name__ == "__main__":
