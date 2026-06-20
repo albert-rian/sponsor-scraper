@@ -117,13 +117,70 @@ def try_js_api(page_url: str, page_html: str) -> list[str] | None:
     return None
 
 
+def extract_names_from_json(obj, depth=0) -> list[str]:
+    """Recursively walk parsed JSON looking for sponsor/company name fields."""
+    if depth > 8:
+        return []
+    names = []
+    if isinstance(obj, dict):
+        for key in ("name", "title", "companyName", "company_name", "sponsor_name",
+                    "exhibitorName", "label", "organizationName"):
+            val = obj.get(key)
+            if isinstance(val, str) and 2 < len(val) < 100:
+                names.append(val.strip())
+        for v in obj.values():
+            names.extend(extract_names_from_json(v, depth + 1))
+    elif isinstance(obj, list):
+        for item in obj:
+            names.extend(extract_names_from_json(item, depth + 1))
+    return names
+
+
 def scrape_sponsors_from_html(page_html: str) -> list[str]:
     """
-    Fallback: extract sponsor names from HTML using heading + image alt / link text heuristics.
+    Extract sponsor names from HTML: embedded JSON first, then DOM heuristics.
     """
     soup = BeautifulSoup(page_html, "html.parser")
     names = set()
     keywords = ["sponsor", "partner", "exhibitor", "supporter"]
+
+    # Strategy 0: embedded JSON in <script> tags (Next.js, SPAs, event platforms)
+    for script in soup.find_all("script"):
+        stype = script.get("type", "")
+        sid = script.get("id", "")
+        content = script.string or ""
+        if not content:
+            continue
+        # Next.js __NEXT_DATA__ or any JSON script block
+        if "application/json" in stype or sid == "__NEXT_DATA__" or any(
+            k in content[:200] for k in ('"sponsors"', '"exhibitors"', '"partners"', '"companies"')
+        ):
+            try:
+                # Find the outermost JSON object/array
+                for m in re.finditer(r'(\{|\[)', content):
+                    try:
+                        obj = json.loads(content[m.start():])
+                        found = extract_names_from_json(obj)
+                        # Only use if it looks like a sponsor list (multiple entries)
+                        if len(found) >= 3:
+                            names.update(found)
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+        # window.__data__ / window.sponsors = [...] style assignments
+        m = re.search(r'(?:sponsors|exhibitors|partners)\s*[=:]\s*(\[.*?\])', content, re.DOTALL)
+        if m:
+            try:
+                obj = json.loads(m.group(1))
+                names.update(extract_names_from_json(obj))
+            except Exception:
+                pass
+
+    if len(names) >= 3:
+        return sorted(names)
 
     # Strategy 1: elements near sponsor headings
     for tag in soup.find_all(["h1", "h2", "h3", "h4", "h5"]):
