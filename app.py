@@ -493,6 +493,18 @@ def enrich(name: str) -> dict:
         # Try just the name — useful when brand = domain (crusoe → crusoe.ai)
         site_results3 = ddg(name, 8)
         result["website"] = best_website(name, site_results3)
+    if result["website"] == "Not Found":
+        # Last resort: probe common TLDs directly for the slugified name
+        slug = re.sub(r'[^a-z0-9]', '', name.lower())
+        for tld in [".com", ".io", ".ai", ".co"]:
+            url = f"https://www.{slug}{tld}"
+            try:
+                r = requests.get(url, headers=HEADERS, timeout=5, allow_redirects=True)
+                if r.status_code == 200:
+                    result["website"] = url
+                    break
+            except Exception:
+                continue
 
     # Step 3: General search for remaining fields
     search_results = ddg(f"{name} company headquarters employees", 6)
