@@ -312,12 +312,37 @@ QUALITY_VERBS = (
 )
 
 
+INDIA_STATES = {
+    "Maharashtra", "Karnataka", "Tamil Nadu", "Telangana", "Andhra Pradesh",
+    "Uttar Pradesh", "Gujarat", "Rajasthan", "West Bengal", "Punjab",
+    "Haryana", "Madhya Pradesh", "Bihar", "Odisha", "Kerala",
+    "Jharkhand", "Assam", "Uttarakhand", "Himachal Pradesh", "Goa",
+    "Delhi", "Chandigarh",
+}
+
+CANADA_PROVINCES = {
+    "Ontario", "Quebec", "British Columbia", "Alberta", "Manitoba",
+    "Saskatchewan", "Nova Scotia", "New Brunswick", "Newfoundland",
+    "Prince Edward Island",
+}
+
+AUSTRALIA_STATES = {
+    "New South Wales", "Victoria", "Queensland", "Western Australia",
+    "South Australia", "Tasmania", "Northern Territory",
+}
+
+
 def resolve_hq(city: str, region: str) -> tuple[str, str]:
-    """Map a city + state/country to (hq_city, hq_country).
-    For US companies, use state as hq_city per user preference."""
+    """Map a city + state/country to (hq_city, hq_country)."""
     region = region.strip()
     if region in US_STATES:
-        return region, "United States"  # use state, not city
+        return region, "United States"
+    if region in INDIA_STATES:
+        return city.strip(), "India"
+    if region in CANADA_PROVINCES:
+        return city.strip(), "Canada"
+    if region in AUSTRALIA_STATES:
+        return city.strip(), "Australia"
     mapping = {"USA": "United States", "US": "United States",
                "UK": "United Kingdom", "UAE": "United Arab Emirates"}
     return city.strip(), mapping.get(region, region)
@@ -326,7 +351,7 @@ def resolve_hq(city: str, region: str) -> tuple[str, str]:
 def clean_wikipedia_summary(extract: str) -> str:
     """Take Wikipedia first sentence as-is — strip pronunciation, minimal quality check."""
     if not extract:
-        return "Not Found"
+        return ""
     text = re.sub(r'\s+', ' ', extract).strip()
     first = re.split(r'(?<=[.!?])\s', text)[0]
     # Strip IPA pronunciation blocks: (/ ... /) or ([...]) with phonetic chars
@@ -336,34 +361,26 @@ def clean_wikipedia_summary(extract: str) -> str:
     first = re.sub(r'[^\x00-\x7FÀ-ɏḀ-ỿ]', '', first)
     first = re.sub(r'\s{2,}', ' ', first).strip()
     if len(first) < 30 or first.lower().startswith("this article"):
-        return "Not Found"
+        return ""
     return first[:300]
 
 
 def clean_fallback_summary(text: str) -> str:
     """Quality check for non-Wikipedia summaries (meta desc / DDG snippet)."""
     if not text:
-        return "Not Found"
+        return ""
     text = re.sub(r'\s+', ' ', text).strip()
     first = re.split(r'(?<=[.!?])\s', text)[0]
     if len(first) < 30:
-        return "Not Found"
+        return ""
     if any(first.lower().startswith(j) for j in JUNK_PREFIXES):
-        return "Not Found"
+        return ""
     if "!" in first:
-        return "Not Found"
+        return ""
     if not any(re.search(r'\b' + re.escape(v) + r'\b', first, re.IGNORECASE) for v in QUALITY_VERBS):
-        return "Not Found"
+        return ""
     return first[:300]
 
-
-def parse_employee_number(size_str: str) -> int:
-    """Convert employee size string to a number for sorting."""
-    if not size_str or size_str == "Not Found":
-        return -1
-    nums = re.findall(r'[\d,]+', size_str.replace(",", ""))
-    nums = [int(n) for n in nums if n.isdigit()]
-    return max(nums) if nums else -1
 
 
 def wikipedia_lookup(name: str) -> dict:
@@ -400,7 +417,7 @@ def wikipedia_lookup(name: str) -> dict:
 
         # Summary — use Wikipedia first sentence as-is
         summary = clean_wikipedia_summary(extract)
-        if summary != "Not Found":
+        if summary:
             out["summary"] = summary
 
         # HQ — handles both state names (Texas) and country names (Germany)
@@ -464,17 +481,16 @@ def best_website(name: str, search_results: list[dict]) -> str:
         # Accept only if a meaningful name word appears in the domain
         if any(len(w) >= 3 and w in domain_slug for w in name_words):
             return "https://www." + domain if not domain.startswith("www") else "https://" + domain
-    return "Not Found"
+    return ""
 
 
 def enrich(name: str) -> dict:
     result = {
         "company_name": name,
-        "website": "Not Found",
-        "summary": "Not Found",
-        "hq_city": "Not Found",
-        "hq_country": "Not Found",
-        "employee_size": "Not Found",
+        "website": "",
+        "summary": "",
+        "hq_city": "",
+        "hq_country": "",
     }
 
     # Step 1: Wikipedia lookup (fast, high quality for known companies)
@@ -482,18 +498,16 @@ def enrich(name: str) -> dict:
     result.update({k: v for k, v in wiki.items() if v})
 
     # Step 2: Dedicated website search — try multiple query variations
-    if result["website"] == "Not Found":
+    if not result["website"]:
         site_results = ddg(f"{name} official website", 6)
         result["website"] = best_website(name, site_results)
-    if result["website"] == "Not Found":
-        # "Bigeye company site" often surfaces the actual domain
+    if not result["website"]:
         site_results2 = ddg(f"{name} company site", 6)
         result["website"] = best_website(name, site_results2)
-    if result["website"] == "Not Found":
-        # Try just the name — useful when brand = domain (crusoe → crusoe.ai)
+    if not result["website"]:
         site_results3 = ddg(name, 8)
         result["website"] = best_website(name, site_results3)
-    if result["website"] == "Not Found":
+    if not result["website"]:
         # Last resort: probe common TLDs directly for the slugified name
         slug = re.sub(r'[^a-z0-9]', '', name.lower())
         for tld in [".com", ".io", ".ai", ".co"]:
@@ -507,24 +521,24 @@ def enrich(name: str) -> dict:
                 continue
 
     # Step 3: General search for remaining fields
-    search_results = ddg(f"{name} company headquarters employees", 6)
+    search_results = ddg(f"{name} company headquarters", 6)
     blob = " | ".join(r.get("title", "") + " " + r.get("body", "") for r in search_results)
 
     # Summary fallback: meta description from official site, then search snippet
-    if result["summary"] == "Not Found" and result["website"] != "Not Found":
+    if not result["summary"] and result["website"]:
         meta = fetch_meta_description(result["website"])
         if meta:
             result["summary"] = clean_fallback_summary(meta)
-    if result["summary"] == "Not Found":
+    if not result["summary"]:
         for r in search_results:
             body = r.get("body", "").strip()
             s = clean_fallback_summary(body)
-            if s != "Not Found":
+            if s:
                 result["summary"] = s
                 break
 
-    # HQ fallback with state mapping
-    if result["hq_city"] == "Not Found":
+    # HQ fallback with state/region mapping
+    if not result["hq_city"]:
         for pat in [
             r'headquartered?\s+in\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
             r'based\s+in\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
@@ -538,33 +552,12 @@ def enrich(name: str) -> dict:
                 break
 
     # HQ last resort: scan blob for known major city names
-    if result["hq_city"] == "Not Found":
+    if not result["hq_city"]:
         blob_lower = blob.lower()
         for city, country in CITY_COUNTRY.items():
             if city in blob_lower:
                 result["hq_city"] = city.title()
                 result["hq_country"] = country
-                break
-
-    # Employees fallback
-    if result["employee_size"] == "Not Found":
-        for pat in [
-            r'(\d[\d,]+)\s*[-–to]+\s*(\d[\d,]+)\s*employees',
-            r'(\d[\d,]+)\+?\s*employees',
-            r'(1-10|11-50|51-200|201-500|501-1,000|1,001-5,000|5,001-10,000|10,000\+)\s*employees',
-            r'(?:over|more than|approximately|about)\s+(\d[\d,]+)\s*(?:employees|people)',
-            r'(\d[\d,]+)\+?\s*(?:people|workers|staff)\s+(?:worldwide|globally)',
-        ]:
-            m = re.search(pat, blob, re.IGNORECASE)
-            if m:
-                if m.lastindex and m.lastindex >= 2:
-                    try:
-                        result["employee_size"] = f"{m.group(1)}-{m.group(2)} employees"
-                    except IndexError:
-                        result["employee_size"] = m.group(1) + " employees"
-                else:
-                    val = m.group(1).strip()
-                    result["employee_size"] = val if "employees" in val.lower() else val + " employees"
                 break
 
     return result
@@ -598,9 +591,8 @@ def run_pipeline(job_id: str, homepage_url: str):
                 return idx, enrich(name)
             except Exception:
                 return idx, {
-                    "company_name": name, "website": "Not Found", "industry": "Not Found",
-                    "summary": "Not Found", "hq_city": "Not Found",
-                    "hq_country": "Not Found", "employee_size": "Not Found",
+                    "company_name": name, "website": "",
+                    "summary": "", "hq_city": "", "hq_country": "",
                 }
 
         with ThreadPoolExecutor(max_workers=5) as executor:
@@ -612,11 +604,11 @@ def run_pipeline(job_id: str, homepage_url: str):
                 job["progress"] = completed[0]
                 job["company"] = data["company_name"]
 
-        # Sort by employee size descending
-        rows.sort(key=lambda r: parse_employee_number(r["employee_size"]), reverse=True)
+        # Sort alphabetically by company name
+        rows.sort(key=lambda r: r["company_name"].lower())
 
         # Build CSV
-        fieldnames = ["company_name", "website", "summary", "hq_city", "hq_country", "employee_size"]
+        fieldnames = ["company_name", "website", "summary", "hq_city", "hq_country"]
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
