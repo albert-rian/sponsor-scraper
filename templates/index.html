@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sponsor Scraper</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .card {
+      background: #1a1d27;
+      border: 1px solid #2d3148;
+      border-radius: 16px;
+      padding: 48px;
+      width: 100%;
+      max-width: 640px;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.4);
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 32px;
+    }
+
+    .logo-icon {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+
+    .logo-text {
+      font-size: 18px;
+      font-weight: 700;
+      color: #f1f5f9;
+      letter-spacing: -0.3px;
+    }
+
+    h1 {
+      font-size: 26px;
+      font-weight: 700;
+      color: #f1f5f9;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+    }
+
+    .subtitle {
+      font-size: 14px;
+      color: #64748b;
+      margin-bottom: 36px;
+      line-height: 1.6;
+    }
+
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: #94a3b8;
+      margin-bottom: 8px;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    input[type="url"] {
+      flex: 1;
+      background: #0f1117;
+      border: 1px solid #2d3148;
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 14px;
+      color: #e2e8f0;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input[type="url"]:focus {
+      border-color: #6366f1;
+    }
+
+    input[type="url"]::placeholder { color: #3d4466; }
+
+    button {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: 12px 24px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.1s;
+      white-space: nowrap;
+    }
+
+    button:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+
+    /* Progress section */
+    #progress-section {
+      display: none;
+      margin-top: 32px;
+    }
+
+    .status-text {
+      font-size: 13px;
+      color: #94a3b8;
+      margin-bottom: 12px;
+      min-height: 20px;
+    }
+
+    .company-name {
+      font-size: 15px;
+      font-weight: 600;
+      color: #e2e8f0;
+      margin-bottom: 16px;
+      min-height: 22px;
+    }
+
+    .progress-bar-bg {
+      background: #0f1117;
+      border-radius: 999px;
+      height: 6px;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #6366f1, #8b5cf6);
+      border-radius: 999px;
+      transition: width 0.4s ease;
+      width: 0%;
+    }
+
+    .progress-count {
+      font-size: 12px;
+      color: #3d4466;
+      text-align: right;
+    }
+
+    /* Done state */
+    #done-section {
+      display: none;
+      margin-top: 32px;
+      text-align: center;
+    }
+
+    .done-icon {
+      font-size: 40px;
+      margin-bottom: 12px;
+    }
+
+    .done-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin-bottom: 6px;
+    }
+
+    .done-sub {
+      font-size: 13px;
+      color: #64748b;
+      margin-bottom: 24px;
+    }
+
+    .download-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: 14px 32px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: opacity 0.2s, transform 0.1s;
+    }
+
+    .download-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+
+    /* Error state */
+    #error-section {
+      display: none;
+      margin-top: 24px;
+      background: #2d1515;
+      border: 1px solid #7f1d1d;
+      border-radius: 10px;
+      padding: 16px;
+      font-size: 13px;
+      color: #fca5a5;
+    }
+
+    .divider {
+      border: none;
+      border-top: 1px solid #2d3148;
+      margin: 32px 0;
+    }
+
+    .steps {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .step {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .step-num {
+      width: 24px;
+      height: 24px;
+      background: #2d3148;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: #6366f1;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .step-text {
+      font-size: 13px;
+      color: #64748b;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">
+      <div class="logo-icon">🔍</div>
+      <div class="logo-text">Sponsor Scraper</div>
+    </div>
+
+    <h1>Find Event Sponsors</h1>
+    <p class="subtitle">Paste any AI conference homepage URL. The tool will automatically find sponsors, enrich company data, and export a clean CSV.</p>
+
+    <label for="url-input">Conference Website URL</label>
+    <div class="input-row">
+      <input type="url" id="url-input" placeholder="https://ai4.io/" />
+      <button id="run-btn" onclick="startRun()">Run</button>
+    </div>
+
+    <div id="error-section"></div>
+
+    <div id="progress-section">
+      <hr class="divider" />
+      <div class="status-text" id="status-text">Starting...</div>
+      <div class="company-name" id="company-name"></div>
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="progress-fill"></div>
+      </div>
+      <div class="progress-count" id="progress-count"></div>
+    </div>
+
+    <div id="done-section">
+      <hr class="divider" />
+      <div class="done-icon">✅</div>
+      <div class="done-title">All done!</div>
+      <div class="done-sub" id="done-sub"></div>
+      <a class="download-btn" id="download-link" href="#">
+        ⬇ Download CSV
+      </a>
+    </div>
+
+    <hr class="divider" />
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-text">Crawls the conference homepage and finds the sponsors / exhibitors page automatically</div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-text">Scrapes all sponsor names — deduplicated and cleaned</div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-text">Enriches each company with industry, HQ, employee size, and a one-line summary</div>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-text">Exports a CSV sorted by company size, largest first</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentJobId = null;
+    let eventSource = null;
+
+    function setError(msg) {
+      const el = document.getElementById('error-section');
+      el.textContent = '⚠ ' + msg;
+      el.style.display = 'block';
+    }
+
+    function clearError() {
+      document.getElementById('error-section').style.display = 'none';
+    }
+
+    async function startRun() {
+      const url = document.getElementById('url-input').value.trim();
+      if (!url) { setError('Please enter a URL.'); return; }
+
+      clearError();
+      document.getElementById('run-btn').disabled = true;
+      document.getElementById('done-section').style.display = 'none';
+      document.getElementById('progress-section').style.display = 'block';
+      document.getElementById('status-text').textContent = 'Connecting...';
+      document.getElementById('company-name').textContent = '';
+      document.getElementById('progress-fill').style.width = '0%';
+      document.getElementById('progress-count').textContent = '';
+
+      if (eventSource) { eventSource.close(); }
+
+      const resp = await fetch('/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      const { job_id, error } = await resp.json();
+      if (error) { setError(error); document.getElementById('run-btn').disabled = false; return; }
+
+      currentJobId = job_id;
+      eventSource = new EventSource('/stream/' + job_id);
+
+      eventSource.addEventListener('status', e => {
+        const d = JSON.parse(e.data);
+        document.getElementById('status-text').textContent = d.message;
+      });
+
+      eventSource.addEventListener('total', e => {
+        const d = JSON.parse(e.data);
+        document.getElementById('status-text').textContent = `Enriching ${d.total} sponsors...`;
+      });
+
+      eventSource.addEventListener('progress', e => {
+        const d = JSON.parse(e.data);
+        const pct = Math.round((d.current / d.total) * 100);
+        document.getElementById('progress-fill').style.width = pct + '%';
+        document.getElementById('progress-count').textContent = `${d.current} / ${d.total}`;
+        document.getElementById('company-name').textContent = d.company;
+        document.getElementById('status-text').textContent = 'Researching...';
+      });
+
+      eventSource.addEventListener('done', e => {
+        const d = JSON.parse(e.data);
+        eventSource.close();
+        document.getElementById('progress-section').style.display = 'none';
+        document.getElementById('done-section').style.display = 'block';
+        document.getElementById('done-sub').textContent = `${d.total} sponsors enriched and sorted by company size.`;
+        document.getElementById('download-link').href = '/download/' + currentJobId;
+        document.getElementById('run-btn').disabled = false;
+      });
+
+      eventSource.addEventListener('error', e => {
+        try {
+          const d = JSON.parse(e.data);
+          setError(d.message);
+        } catch { setError('Something went wrong.'); }
+        eventSource.close();
+        document.getElementById('progress-section').style.display = 'none';
+        document.getElementById('run-btn').disabled = false;
+      });
+
+      eventSource.onerror = () => {
+        setError('Connection lost. Please try again.');
+        eventSource.close();
+        document.getElementById('run-btn').disabled = false;
+      };
+    }
+
+    document.getElementById('url-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') startRun();
+    });
+  </script>
+</body>
+</html>
