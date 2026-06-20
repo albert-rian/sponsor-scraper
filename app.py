@@ -271,6 +271,105 @@ def parse_employee_number(size_str: str) -> int:
     return max(nums) if nums else -1
 
 
+def wikipedia_lookup(name: str) -> dict:
+    """
+    Query the Wikipedia API for a company. Returns partial result dict.
+    Fast, free, structured — great for well-known companies.
+    """
+    out = {}
+    try:
+        # Search for the page
+        search_resp = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={"action": "query", "list": "search", "srsearch": name + " company",
+                    "format": "json", "srlimit": 1},
+            timeout=6
+        ).json()
+        hits = search_resp.get("query", {}).get("search", [])
+        if not hits:
+            return out
+        title = hits[0]["title"]
+
+        # Fetch page extract + page props
+        page_resp = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={"action": "query", "titles": title, "prop": "extracts|pageprops",
+                    "exintro": True, "explaintext": True, "format": "json"},
+            timeout=6
+        ).json()
+        pages = page_resp.get("query", {}).get("pages", {})
+        page = next(iter(pages.values()))
+        extract = page.get("extract", "")
+        if not extract:
+            return out
+
+        # Summary: first sentence of the extract
+        out["summary"] = first_sentence(extract)
+
+        # Industry: look for "is an American/global/multinational X company"
+        for pat in [
+            r'is an?\s+(?:\w+\s+){0,3}([\w\s&/-]+?)\s+(?:company|corporation|firm|conglomerate)',
+            r'([\w\s&/-]+?)\s+company\b',
+        ]:
+            m = re.search(pat, extract[:500], re.IGNORECASE)
+            if m:
+                out["industry"] = m.group(1).strip()[:60]
+                break
+
+        # HQ: "headquartered in City, Country/State"
+        for pat in [
+            r'headquartered\s+in\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
+            r'based\s+in\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
+        ]:
+            m = re.search(pat, extract)
+            if m:
+                out["hq_city"] = m.group(1).strip()
+                out["hq_country"] = m.group(2).strip()
+                break
+
+        # Employees
+        for pat in [
+            r'(\d[\d,]+)\s*[-–]\s*(\d[\d,]+)\s*employees',
+            r'(\d[\d,]+)\+?\s*employees',
+            r'(?:approximately|about|over|more than)\s+(\d[\d,]+)\s*employees',
+        ]:
+            m = re.search(pat, extract, re.IGNORECASE)
+            if m:
+                if m.lastindex and m.lastindex >= 2:
+                    out["employee_size"] = f"{m.group(1)}-{m.group(2)} employees"
+                else:
+                    out["employee_size"] = m.group(1) + " employees"
+                break
+
+    except Exception:
+        pass
+    return out
+
+
+def best_website(name: str, search_results: list[dict]) -> str:
+    """Pick the official company website from search results."""
+    skip = ("linkedin", "facebook", "twitter", "crunchbase", "bloomberg",
+            "wikipedia", "glassdoor", "indeed", "youtube", "instagram",
+            "yelp", "yahoo", "reuters", "forbes", "techcrunch", "wsj",
+            "bloomberg", "businesswire", "prnewswire", "finance.")
+    name_slug = re.sub(r'[^a-z0-9]', '', name.lower())
+    # Prefer a result whose domain contains part of the company name
+    for r in search_results:
+        href = r.get("href", "")
+        if not href or any(s in href for s in skip):
+            continue
+        domain = re.sub(r'https?://(www\.)?', '', href).split("/")[0]
+        domain_slug = re.sub(r'[^a-z0-9]', '', domain.lower())
+        if name_slug[:5] in domain_slug or domain_slug[:5] in name_slug:
+            return "https://" + domain
+    # Fallback: first non-skip result
+    for r in search_results:
+        href = r.get("href", "")
+        if href and not any(s in href for s in skip):
+            return href.split("?")[0]
+    return "Not Found"
+
+
 def enrich(name: str) -> dict:
     result = {
         "company_name": name,
@@ -282,81 +381,79 @@ def enrich(name: str) -> dict:
         "employee_size": "Not Found",
     }
 
-    # Single search query covering all fields at once
-    results = ddg(f"{name} company headquarters employees industry", 6)
-    if not results:
-        return result
+    # Step 1: Wikipedia lookup (fast, high quality for known companies)
+    wiki = wikipedia_lookup(name)
+    if wiki.get("summary"):
+        result.update({k: v for k, v in wiki.items() if v})
 
-    blob = " | ".join(r.get("title", "") + " " + r.get("body", "") for r in results)
+    # Step 2: DDG search to fill gaps + find official website
+    search_results = ddg(f"{name} company headquarters employees industry", 6)
+    blob = " | ".join(r.get("title", "") + " " + r.get("body", "") for r in search_results)
 
-    # Website
-    skip_domains = ("linkedin", "facebook", "twitter", "crunchbase", "bloomberg",
-                    "wikipedia", "glassdoor", "indeed", "youtube", "instagram", "yelp")
-    for r in results:
-        href = r.get("href", "")
-        if href and not any(s in href for s in skip_domains):
-            result["website"] = href.split("?")[0]
-            break
+    # Website — smarter domain matching
+    result["website"] = best_website(name, search_results)
 
-    # Summary: meta description from website (one fast fetch), else first search snippet
-    if result["website"] != "Not Found":
+    # Summary fallback: meta description from official site
+    if result["summary"] == "Not Found" and result["website"] != "Not Found":
         meta = fetch_meta_description(result["website"])
         if meta and len(meta) > 30:
             result["summary"] = first_sentence(meta)
     if result["summary"] == "Not Found":
-        for r in results:
+        for r in search_results:
             body = r.get("body", "").strip()
             if body and len(body) > 40:
                 result["summary"] = first_sentence(body)
                 break
 
-    # Industry — extract from the combined blob
-    for pat in [
-        r'(?:is an?|is the)\s+([\w\s&/-]{3,40}?)\s+(?:company|provider|platform|firm|leader|software)',
-        r'(?:leading|top|global)\s+([\w\s&/-]{3,40}?)\s+(?:company|provider|platform)',
-        r'specializes?\s+in\s+([\w\s&,/-]{3,50}?)(?:\.|,)',
-        r'(artificial intelligence|machine learning|cloud computing|cybersecurity|data analytics|'
-        r'fintech|healthcare IT|e-commerce|SaaS|enterprise software|robotics|networking|'
-        r'semiconductor|consulting|financial services|telecommunications|logistics|'
-        r'human resources|marketing technology|education technology)',
-        r'Industry:\s*([\w\s&,/-]+?)(?:\||\.|\n)',
-    ]:
-        m = re.search(pat, blob, re.IGNORECASE)
-        if m:
-            result["industry"] = m.group(1).strip(" .,|")[:60]
-            break
+    # Industry fallback
+    if result["industry"] == "Not Found":
+        for pat in [
+            r'(?:is an?|is the)\s+([\w\s&/-]{3,40}?)\s+(?:company|provider|platform|firm|leader|software)',
+            r'(?:leading|top|global)\s+([\w\s&/-]{3,40}?)\s+(?:company|provider|platform)',
+            r'specializes?\s+in\s+([\w\s&,/-]{3,50}?)(?:\.|,)',
+            r'(artificial intelligence|machine learning|cloud computing|cybersecurity|data analytics|'
+            r'fintech|healthcare IT|e-commerce|SaaS|enterprise software|robotics|networking|'
+            r'semiconductor|consulting|financial services|telecommunications|logistics|'
+            r'human resources|marketing technology|education technology)',
+        ]:
+            m = re.search(pat, blob, re.IGNORECASE)
+            if m:
+                result["industry"] = m.group(1).strip(" .,|")[:60]
+                break
 
-    # HQ
-    for pat in [
-        r'headquartered?\s+in\s+([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*|[A-Z]{2})',
-        r'based\s+in\s+([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*)',
-        r'([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*),\s*(United States|USA|UK|United Kingdom|Canada|Germany|France|India|Israel|Australia|Singapore|Japan|China|Netherlands|Sweden|Finland)',
-    ]:
-        m = re.search(pat, blob)
-        if m:
-            result["hq_city"] = m.group(1).strip()
-            result["hq_country"] = m.group(2).strip()
-            break
+    # HQ fallback
+    if result["hq_city"] == "Not Found":
+        for pat in [
+            r'headquartered?\s+in\s+([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*|[A-Z]{2})',
+            r'based\s+in\s+([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*)',
+            r'([A-Z][a-z]+(?:[\s][A-Z][a-z]+)*),\s*(United States|USA|UK|United Kingdom|Canada|Germany|France|India|Israel|Australia|Singapore|Japan|China|Netherlands|Sweden|Finland)',
+        ]:
+            m = re.search(pat, blob)
+            if m:
+                result["hq_city"] = m.group(1).strip()
+                result["hq_country"] = m.group(2).strip()
+                break
 
-    # Employees
-    for pat in [
-        r'(\d[\d,]+)\s*[-–to]+\s*(\d[\d,]+)\s*employees',
-        r'(\d[\d,]+)\+?\s*employees',
-        r'(1-10|11-50|51-200|201-500|501-1,000|1,001-5,000|5,001-10,000|10,000\+)\s*employees',
-        r'(?:over|more than|approximately|about)\s+(\d[\d,]+)\s*(?:employees|people)',
-        r'(\d[\d,]+)\+?\s*(?:people|workers|staff)\s+(?:worldwide|globally)',
-    ]:
-        m = re.search(pat, blob, re.IGNORECASE)
-        if m:
-            if m.lastindex and m.lastindex >= 2:
-                try:
-                    result["employee_size"] = f"{m.group(1)}-{m.group(2)} employees"
-                except IndexError:
-                    result["employee_size"] = m.group(1) + " employees"
-            else:
-                val = m.group(1).strip()
-                result["employee_size"] = val if "employees" in val.lower() else val + " employees"
-            break
+    # Employees fallback
+    if result["employee_size"] == "Not Found":
+        for pat in [
+            r'(\d[\d,]+)\s*[-–to]+\s*(\d[\d,]+)\s*employees',
+            r'(\d[\d,]+)\+?\s*employees',
+            r'(1-10|11-50|51-200|201-500|501-1,000|1,001-5,000|5,001-10,000|10,000\+)\s*employees',
+            r'(?:over|more than|approximately|about)\s+(\d[\d,]+)\s*(?:employees|people)',
+            r'(\d[\d,]+)\+?\s*(?:people|workers|staff)\s+(?:worldwide|globally)',
+        ]:
+            m = re.search(pat, blob, re.IGNORECASE)
+            if m:
+                if m.lastindex and m.lastindex >= 2:
+                    try:
+                        result["employee_size"] = f"{m.group(1)}-{m.group(2)} employees"
+                    except IndexError:
+                        result["employee_size"] = m.group(1) + " employees"
+                else:
+                    val = m.group(1).strip()
+                    result["employee_size"] = val if "employees" in val.lower() else val + " employees"
+                break
 
     return result
 
